@@ -1,9 +1,7 @@
 import streamlit as st
 from datetime import date
-from decimal import Decimal
-import json
-from pathlib import Path
 import pandas as pd
+import psycopg2
 
 # -----------------------------
 # CONFIGURAÇÃO DA PÁGINA
@@ -52,7 +50,7 @@ button {
 """, unsafe_allow_html=True)
 
 # -----------------------------
-# LOGIN (CORRIGIDO PARA CELULAR)
+# LOGIN
 # -----------------------------
 USER = "smyle"
 PASSWORD = "1234"
@@ -68,7 +66,6 @@ if not st.session_state["logged_in"]:
     password = st.text_input("Senha", type="password", autocomplete="off")
 
     if st.button("Entrar"):
-        # ✅ Remove espaços invisíveis e ignora maiúsculas no usuário
         if username.strip().lower() == USER and password.strip() == PASSWORD:
             st.session_state["logged_in"] = True
             st.success("Bem-vindo, Smyle! ✅")
@@ -87,28 +84,87 @@ if st.sidebar.button("🚪 Sair"):
     st.rerun()
 
 # -----------------------------
-# DADOS
+# CONEXÃO SUPABASE
 # -----------------------------
-DATA_FILE = Path("data.json")
-
-def load_transactions():
-    if not DATA_FILE.exists():
-        return []
-    return json.loads(DATA_FILE.read_text(encoding="utf-8"))
-
-def save_transactions(items):
-    DATA_FILE.write_text(
-        json.dumps(items, indent=2, ensure_ascii=False),
-        encoding="utf-8"
+def get_connection():
+    return psycopg2.connect(
+        host=st.secrets["DB_HOST"],
+        database=st.secrets["DB_NAME"],
+        user=st.secrets["DB_USER"],
+        password=st.secrets["DB_PASS"],
+        port=st.secrets["DB_PORT"]
     )
 
+# -----------------------------
+# FUNÇÕES DO BANCO
+# -----------------------------
+def load_transactions():
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT id, kind, amount, description, category, card, entry_date
+        FROM transactions
+        ORDER BY entry_date ASC
+    """)
+
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    return [
+        {
+            "id": r[0],
+            "kind": r[1],
+            "amount": float(r[2]),
+            "description": r[3],
+            "category": r[4],
+            "card": r[5],
+            "entry_date": str(r[6])
+        }
+        for r in rows
+    ]
+
+def add_transaction(item):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        INSERT INTO transactions (kind, amount, description, category, card, entry_date)
+        VALUES (%s, %s, %s, %s, %s, %s)
+    """, (
+        item["kind"],
+        float(item["amount"]),
+        item["description"],
+        item["category"],
+        item["card"],
+        item["entry_date"]
+    ))
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def delete_transaction(transaction_id):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("DELETE FROM transactions WHERE id = %s", (transaction_id,))
+    conn.commit()
+
+    cur.close()
+    conn.close()
+
+# -----------------------------
+# CARREGAR TRANSAÇÕES
+# -----------------------------
 transactions = load_transactions()
 
 # -----------------------------
-# HEADER PRINCIPAL
+# HEADER
 # -----------------------------
 st.title("💰 Controle Financeiro")
-st.caption("Seu painel pessoal de receitas e despesas")
+st.caption("Agora com banco online Supabase ✅")
 
 # -----------------------------
 # ABAS
@@ -143,21 +199,21 @@ with tab1:
     if st.button("💾 Salvar"):
         new_item = {
             "kind": kind,
-            "amount": str(amount),
+            "amount": amount,
             "description": description,
             "category": category,
             "card": card,
             "entry_date": entry_date.strftime("%Y-%m-%d")
         }
-        transactions.append(new_item)
-        save_transactions(transactions)
+
+        add_transaction(new_item)
         st.success("Transação registrada! ✅")
         st.rerun()
 
     st.markdown("</div>", unsafe_allow_html=True)
 
 # -----------------------------
-# ABA 2 - LISTAR + APAGAR + FILTRO
+# ABA 2 - LISTAR + APAGAR
 # -----------------------------
 with tab2:
     st.markdown("<div class='card'>", unsafe_allow_html=True)
@@ -168,16 +224,13 @@ with tab2:
     else:
         df = pd.DataFrame(transactions)
 
-        if "card" not in df.columns:
-            df["card"] = "Sem cartão"
-
-        filtro_cartao = st.selectbox(
+        filtro = st.selectbox(
             "Filtrar por cartão:",
-            ["Todos"] + sorted(df["card"].fillna("Sem cartão").unique())
+            ["Todos"] + sorted(df["card"].unique())
         )
 
-        if filtro_cartao != "Todos":
-            df = df[df["card"] == filtro_cartao]
+        if filtro != "Todos":
+            df = df[df["card"] == filtro]
 
         st.dataframe(df, use_container_width=True)
 
@@ -185,43 +238,38 @@ with tab2:
         st.subheader("🗑️ Apagar transação")
 
         options = [
-            f"{i+1} - {t['entry_date']} | {t['kind']} | "
-            f"R$ {t['amount']} | {t['description']} "
-            f"({t.get('card', 'Sem cartão')})"
-            for i, t in enumerate(transactions)
+            f"{t['id']} - {t['entry_date']} | {t['kind']} | "
+            f"R$ {t['amount']} | {t['description']} ({t['card']})"
+            for t in transactions
         ]
 
         selected = st.selectbox("Selecione:", options)
-        index_to_delete = options.index(selected)
+        transaction_id = int(selected.split(" - ")[0])
 
         if st.button("❌ Apagar"):
-            transactions.pop(index_to_delete)
-            save_transactions(transactions)
+            delete_transaction(transaction_id)
             st.success("Transação apagada! ✅")
             st.rerun()
 
     st.markdown("</div>", unsafe_allow_html=True)
 
 # -----------------------------
-# ABA 3 - DASHBOARD + GRÁFICO
+# ABA 3 - DASHBOARD
 # -----------------------------
 with tab3:
     st.markdown("<div class='card'>", unsafe_allow_html=True)
-    st.subheader("📊 Resumo Mensal + Categoria")
+    st.subheader("📊 Resumo Mensal")
 
     if transactions:
         df = pd.DataFrame(transactions)
-
-        if "card" not in df.columns:
-            df["card"] = "Sem cartão"
 
         months = sorted(df["entry_date"].str[:7].unique())
         selected_month = st.selectbox("Mês:", months)
 
         df_month = df[df["entry_date"].str.startswith(selected_month)]
 
-        income = df_month[df_month["kind"] == "receita"]["amount"].astype(float).sum()
-        expenses = df_month[df_month["kind"] == "despesa"]["amount"].astype(float).sum()
+        income = df_month[df_month["kind"] == "receita"]["amount"].sum()
+        expenses = df_month[df_month["kind"] == "despesa"]["amount"].sum()
         balance = income - expenses
 
         col1, col2, col3 = st.columns(3)
@@ -235,9 +283,7 @@ with tab3:
         df_exp = df_month[df_month["kind"] == "despesa"]
 
         if not df_exp.empty:
-            chart_data = df_exp.groupby("category")["amount"].apply(
-                lambda x: x.astype(float).sum()
-            )
+            chart_data = df_exp.groupby("category")["amount"].sum()
             st.bar_chart(chart_data)
         else:
             st.info("Nenhuma despesa nesse mês.")
@@ -248,7 +294,7 @@ with tab3:
     st.markdown("</div>", unsafe_allow_html=True)
 
 # -----------------------------
-# ABA 4 - EXPORTAR EXCEL
+# ABA 4 - EXPORTAR
 # -----------------------------
 with tab4:
     st.markdown("<div class='card'>", unsafe_allow_html=True)
@@ -256,9 +302,6 @@ with tab4:
 
     if transactions:
         df = pd.DataFrame(transactions)
-
-        if "card" not in df.columns:
-            df["card"] = "Sem cartão"
 
         excel_file = "transacoes.xlsx"
         df.to_excel(excel_file, index=False)
