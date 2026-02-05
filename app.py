@@ -2,36 +2,30 @@ import streamlit as st
 from datetime import date
 import pandas as pd
 import psycopg2
+from supabase import create_client
 
-# -----------------------------
+# =============================
 # CONFIGURAÇÃO DA PÁGINA
-# -----------------------------
+# =============================
 st.set_page_config(
     page_title="Controle Financeiro",
     page_icon="💰",
     layout="wide"
 )
 
-# -----------------------------
-# ESTILO PREMIUM
-# -----------------------------
+# =============================
+# ESTILO PREMIUM MOBILE
+# =============================
 st.markdown("""
 <style>
 body {
     background-color: #f6f7fb;
 }
-
 .block-container {
     padding-top: 1.5rem;
     padding-left: 1rem;
     padding-right: 1rem;
 }
-
-h1 {
-    font-size: 2.2rem !important;
-    font-weight: 800 !important;
-}
-
 .card {
     background: white;
     padding: 20px;
@@ -39,7 +33,6 @@ h1 {
     box-shadow: 0px 2px 10px rgba(0,0,0,0.08);
     margin-bottom: 15px;
 }
-
 button {
     width: 100%;
     border-radius: 12px !important;
@@ -49,43 +42,16 @@ button {
 </style>
 """, unsafe_allow_html=True)
 
-# -----------------------------
-# LOGIN
-# -----------------------------
-USER = "smyle"
-PASSWORD = "1234"
+# =============================
+# SUPABASE CONFIG
+# =============================
+SUPABASE_URL = st.secrets["SUPABASE_URL"]
+SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-if "logged_in" not in st.session_state:
-    st.session_state["logged_in"] = False
-
-if not st.session_state["logged_in"]:
-    st.markdown("<div class='card'>", unsafe_allow_html=True)
-    st.title("🔐 Login")
-
-    username = st.text_input("Usuário", autocomplete="off")
-    password = st.text_input("Senha", type="password", autocomplete="off")
-
-    if st.button("Entrar"):
-        if username.strip().lower() == USER and password.strip() == PASSWORD:
-            st.session_state["logged_in"] = True
-            st.success("Bem-vindo, Smyle! ✅")
-            st.rerun()
-        else:
-            st.error("Usuário ou senha incorretos ❌")
-
-    st.markdown("</div>", unsafe_allow_html=True)
-    st.stop()
-
-# -----------------------------
-# LOGOUT
-# -----------------------------
-if st.sidebar.button("🚪 Sair"):
-    st.session_state["logged_in"] = False
-    st.rerun()
-
-# -----------------------------
-# CONEXÃO SUPABASE
-# -----------------------------
+# =============================
+# POSTGRES CONFIG
+# =============================
 def get_connection():
     return psycopg2.connect(
         host=st.secrets["DB_HOST"],
@@ -95,46 +61,107 @@ def get_connection():
         port=st.secrets["DB_PORT"]
     )
 
-# -----------------------------
-# FUNÇÕES DO BANCO
-# -----------------------------
-def load_transactions():
+# =============================
+# INICIAR BANCO
+# =============================
+def init_db():
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS profiles (
+        id UUID PRIMARY KEY,
+        name TEXT
+    );
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS transactions (
+        id SERIAL PRIMARY KEY,
+        user_id UUID,
+        kind TEXT,
+        amount NUMERIC,
+        description TEXT,
+        category TEXT,
+        card TEXT,
+        entry_date DATE
+    );
+    """)
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+init_db()
+
+# =============================
+# PERFIL USUÁRIO
+# =============================
+def get_user_name(user_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT name FROM profiles WHERE id=%s", (user_id,))
+    result = cur.fetchone()
+    cur.close()
+    conn.close()
+    return result[0] if result else None
+
+
+def save_user_name(user_id, name):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO profiles (id, name)
+        VALUES (%s,%s)
+        ON CONFLICT (id)
+        DO UPDATE SET name = EXCLUDED.name
+    """, (user_id, name))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+# =============================
+# TRANSAÇÕES
+# =============================
+def load_transactions(user_id):
     conn = get_connection()
     cur = conn.cursor()
 
     cur.execute("""
         SELECT id, kind, amount, description, category, card, entry_date
         FROM transactions
-        ORDER BY entry_date ASC
-    """)
+        WHERE user_id=%s
+        ORDER BY entry_date DESC
+    """, (user_id,))
 
     rows = cur.fetchall()
     cur.close()
     conn.close()
 
-    return [
-        {
-            "id": r[0],
-            "kind": r[1],
-            "amount": float(r[2]),
-            "description": r[3],
-            "category": r[4],
-            "card": r[5],
-            "entry_date": str(r[6])
-        }
-        for r in rows
-    ]
+    return [{
+        "id": r[0],
+        "kind": r[1],
+        "amount": float(r[2]),
+        "description": r[3],
+        "category": r[4],
+        "card": r[5],
+        "entry_date": str(r[6])
+    } for r in rows]
 
-def add_transaction(item):
+
+def add_transaction(user_id, item):
     conn = get_connection()
     cur = conn.cursor()
 
+    amount_value = float(str(item["amount"]).replace(",", "."))
+
     cur.execute("""
-        INSERT INTO transactions (kind, amount, description, category, card, entry_date)
-        VALUES (%s, %s, %s, %s, %s, %s)
+        INSERT INTO transactions (user_id, kind, amount, description, category, card, entry_date)
+        VALUES (%s,%s,%s,%s,%s,%s,%s)
     """, (
+        user_id,
         item["kind"],
-        float(item["amount"]),
+        amount_value,
         item["description"],
         item["category"],
         item["card"],
@@ -145,125 +172,157 @@ def add_transaction(item):
     cur.close()
     conn.close()
 
+
 def delete_transaction(transaction_id):
     conn = get_connection()
     cur = conn.cursor()
-
-    cur.execute("DELETE FROM transactions WHERE id = %s", (transaction_id,))
+    cur.execute("DELETE FROM transactions WHERE id=%s", (transaction_id,))
     conn.commit()
-
     cur.close()
     conn.close()
 
-# -----------------------------
-# CARREGAR TRANSAÇÕES
-# -----------------------------
-transactions = load_transactions()
+# =============================
+# SESSÃO
+# =============================
+if "user" not in st.session_state:
+    st.session_state["user"] = None
 
-# -----------------------------
+# =============================
+# LOGIN + CADASTRO
+# =============================
+if st.session_state["user"] is None:
+
+    st.title("🔐 Controle Financeiro")
+
+    tab1, tab2 = st.tabs(["➡️ Entrar", "🆕 Criar Conta"])
+
+    # LOGIN
+    with tab1:
+        email = st.text_input("Email")
+        password = st.text_input("Senha", type="password")
+
+        if st.button("Entrar"):
+            try:
+                res = supabase.auth.sign_in_with_password({
+                    "email": email,
+                    "password": password
+                })
+                st.session_state["user"] = res.user
+                st.success("Login feito ✅")
+                st.rerun()
+            except:
+                st.error("Senha ou email incorretos ❌")
+
+    # CADASTRO
+    with tab2:
+        name = st.text_input("Seu nome completo")
+        new_email = st.text_input("Novo Email")
+        new_password = st.text_input("Nova Senha", type="password")
+
+        if st.button("Criar Conta"):
+            try:
+                res = supabase.auth.sign_up({
+                    "email": new_email,
+                    "password": new_password
+                })
+
+                user_id = res.user.id
+                save_user_name(user_id, name)
+
+                st.success("Conta criada 🎉 Agora faça login!")
+            except Exception as e:
+                st.error("Erro ao cadastrar ❌")
+
+    st.stop()
+
+# =============================
+# USUÁRIO LOGADO
+# =============================
+user_id = st.session_state["user"].id
+user_name = get_user_name(user_id)
+
+# LOGOUT
+if st.sidebar.button("🚪 Sair"):
+    st.session_state["user"] = None
+    st.rerun()
+
+# =============================
 # HEADER
-# -----------------------------
-st.title("💰 Controle Financeiro")
-st.caption("Agora com banco online Supabase ✅")
+# =============================
+st.title(f"💰 Bem-vindo, {user_name} 👋")
 
-# -----------------------------
-# ABAS
-# -----------------------------
-tab1, tab2, tab3, tab4 = st.tabs(
-    ["➕ Adicionar", "📋 Transações", "📊 Dashboard", "📤 Exportar"]
+transactions = load_transactions(user_id)
+
+# =============================
+# ABAS DO APP
+# =============================
+tab_add, tab_list, tab_dash = st.tabs(
+    ["➕ Adicionar", "📋 Transações", "📊 Dashboard"]
 )
 
-# -----------------------------
-# ABA 1 - ADICIONAR
-# -----------------------------
-with tab1:
-    st.markdown("<div class='card'>", unsafe_allow_html=True)
+# =============================
+# ADICIONAR
+# =============================
+with tab_add:
     st.subheader("➕ Nova Transação")
 
-    col1, col2 = st.columns(2)
-
-    with col1:
-        kind = st.selectbox("Tipo", ["receita", "despesa"])
-        amount = st.text_input("Valor (ex: 120.50)")
-
-    with col2:
-        card = st.selectbox(
-            "Cartão / Conta",
-            ["Nubank", "Inter", "Itaú", "Dinheiro", "Outro"]
-        )
-        entry_date = st.date_input("Data", value=date.today())
-
+    kind = st.selectbox("Tipo", ["receita", "despesa"])
+    amount = st.text_input("Valor (ex: 8,00)")
     description = st.text_input("Descrição")
     category = st.text_input("Categoria", value="outros")
+    card = st.selectbox("Cartão", ["Nubank", "Inter", "Itaú", "Dinheiro", "Outro"])
+    entry_date = st.date_input("Data", value=date.today())
 
     if st.button("💾 Salvar"):
-        new_item = {
-            "kind": kind,
-            "amount": amount,
-            "description": description,
-            "category": category,
-            "card": card,
-            "entry_date": entry_date.strftime("%Y-%m-%d")
-        }
+        try:
+            add_transaction(user_id, {
+                "kind": kind,
+                "amount": amount,
+                "description": description,
+                "category": category,
+                "card": card,
+                "entry_date": entry_date
+            })
+            st.success("Transação salva ✅")
+            st.rerun()
+        except:
+            st.error("Digite um valor válido, ex: 10,50")
 
-        add_transaction(new_item)
-        st.success("Transação registrada! ✅")
-        st.rerun()
-
-    st.markdown("</div>", unsafe_allow_html=True)
-
-# -----------------------------
-# ABA 2 - LISTAR + APAGAR
-# -----------------------------
-with tab2:
-    st.markdown("<div class='card'>", unsafe_allow_html=True)
-    st.subheader("📋 Histórico de Transações")
+# =============================
+# LISTAR + APAGAR
+# =============================
+with tab_list:
+    st.subheader("📋 Histórico")
 
     if not transactions:
         st.info("Nenhuma transação encontrada.")
     else:
         df = pd.DataFrame(transactions)
 
-        filtro = st.selectbox(
-            "Filtrar por cartão:",
-            ["Todos"] + sorted(df["card"].unique())
-        )
-
-        if filtro != "Todos":
-            df = df[df["card"] == filtro]
-
-        st.dataframe(df, use_container_width=True)
+        st.dataframe(df.drop(columns=["id"]), width="stretch")
 
         st.divider()
-        st.subheader("🗑️ Apagar transação")
+        st.subheader("🗑️ Apagar")
 
-        options = [
-            f"{t['id']} - {t['entry_date']} | {t['kind']} | "
-            f"R$ {t['amount']} | {t['description']} ({t['card']})"
-            for t in transactions
-        ]
-
-        selected = st.selectbox("Selecione:", options)
-        transaction_id = int(selected.split(" - ")[0])
+        selected_id = st.selectbox("Selecione:", df["id"].tolist())
 
         if st.button("❌ Apagar"):
-            delete_transaction(transaction_id)
-            st.success("Transação apagada! ✅")
+            delete_transaction(selected_id)
+            st.success("Apagado ✅")
             st.rerun()
 
-    st.markdown("</div>", unsafe_allow_html=True)
-
-# -----------------------------
-# ABA 3 - DASHBOARD
-# -----------------------------
-with tab3:
-    st.markdown("<div class='card'>", unsafe_allow_html=True)
+# =============================
+# DASHBOARD
+# =============================
+with tab_dash:
     st.subheader("📊 Resumo Mensal")
 
-    if transactions:
+    if not transactions:
+        st.info("Nada registrado ainda.")
+    else:
         df = pd.DataFrame(transactions)
-
         months = sorted(df["entry_date"].str[:7].unique())
+
         selected_month = st.selectbox("Mês:", months)
 
         df_month = df[df["entry_date"].str.startswith(selected_month)]
@@ -272,48 +331,13 @@ with tab3:
         expenses = df_month[df_month["kind"] == "despesa"]["amount"].sum()
         balance = income - expenses
 
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Receitas", f"R$ {income:.2f}")
-        col2.metric("Despesas", f"R$ {expenses:.2f}")
-        col3.metric("Saldo", f"R$ {balance:.2f}")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Receitas", f"R$ {income:.2f}")
+        c2.metric("Despesas", f"R$ {expenses:.2f}")
+        c3.metric("Saldo", f"R$ {balance:.2f}")
+✅ AGORA MUITO IMPORTANTE
+Depois de colar esse app.py, faça:
 
-        st.divider()
-        st.subheader("📌 Gastos por Categoria")
-
-        df_exp = df_month[df_month["kind"] == "despesa"]
-
-        if not df_exp.empty:
-            chart_data = df_exp.groupby("category")["amount"].sum()
-            st.bar_chart(chart_data)
-        else:
-            st.info("Nenhuma despesa nesse mês.")
-
-    else:
-        st.info("Nenhuma transação registrada ainda.")
-
-    st.markdown("</div>", unsafe_allow_html=True)
-
-# -----------------------------
-# ABA 4 - EXPORTAR
-# -----------------------------
-with tab4:
-    st.markdown("<div class='card'>", unsafe_allow_html=True)
-    st.subheader("📤 Exportar Dados")
-
-    if transactions:
-        df = pd.DataFrame(transactions)
-
-        excel_file = "transacoes.xlsx"
-        df.to_excel(excel_file, index=False)
-
-        with open(excel_file, "rb") as f:
-            st.download_button(
-                label="⬇️ Baixar Excel",
-                data=f,
-                file_name="transacoes.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-    else:
-        st.info("Nenhuma transação para exportar.")
-
-    st.markdown("</div>", unsafe_allow_html=True)
+git add app.py
+git commit -m "Login e cadastro Supabase final"
+git push
