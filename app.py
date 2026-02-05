@@ -335,9 +335,3 @@ with tab_dash:
         c1.metric("Receitas", f"R$ {income:.2f}")
         c2.metric("Despesas", f"R$ {expenses:.2f}")
         c3.metric("Saldo", f"R$ {balance:.2f}")
-✅ AGORA MUITO IMPORTANTE
-Depois de colar esse app.py, faça:
-
-git add app.py
-git commit -m "Login e cadastro Supabase final"
-git push
