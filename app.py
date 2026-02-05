@@ -52,7 +52,7 @@ button {
 """, unsafe_allow_html=True)
 
 # -----------------------------
-# LOGIN
+# LOGIN (CORRIGIDO PARA CELULAR)
 # -----------------------------
 USER = "smyle"
 PASSWORD = "1234"
@@ -64,11 +64,12 @@ if not st.session_state["logged_in"]:
     st.markdown("<div class='card'>", unsafe_allow_html=True)
     st.title("🔐 Login")
 
-    username = st.text_input("Usuário")
-    password = st.text_input("Senha", type="password")
+    username = st.text_input("Usuário", autocomplete="off")
+    password = st.text_input("Senha", type="password", autocomplete="off")
 
     if st.button("Entrar"):
-        if username == USER and password == PASSWORD:
+        # ✅ Remove espaços invisíveis e ignora maiúsculas no usuário
+        if username.strip().lower() == USER and password.strip() == PASSWORD:
             st.session_state["logged_in"] = True
             st.success("Bem-vindo, Smyle! ✅")
             st.rerun()
@@ -167,7 +168,6 @@ with tab2:
     else:
         df = pd.DataFrame(transactions)
 
-        # ✅ CORREÇÃO DEFINITIVA
         if "card" not in df.columns:
             df["card"] = "Sem cartão"
 
@@ -212,7 +212,6 @@ with tab3:
     if transactions:
         df = pd.DataFrame(transactions)
 
-        # ✅ CORREÇÃO DEFINITIVA
         if "card" not in df.columns:
             df["card"] = "Sem cartão"
 
@@ -258,7 +257,6 @@ with tab4:
     if transactions:
         df = pd.DataFrame(transactions)
 
-        # ✅ CORREÇÃO DEFINITIVA
         if "card" not in df.columns:
             df["card"] = "Sem cartão"
 
