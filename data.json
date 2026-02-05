@@ -1,0 +1,16 @@
+[
+  {
+    "kind": "receita",
+    "amount": "5300",
+    "description": "Salário",
+    "category": "trabalho",
+    "entry_date": "2026-02-05"
+  },
+  {
+    "kind": "despesa",
+    "amount": "100",
+    "description": "Gasolina",
+    "category": "transporte",
+    "entry_date": "2026-02-05"
+  }
+]
